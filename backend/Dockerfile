@@ -27,7 +27,8 @@ RUN apt-get update \
  && groupadd --system app && useradd --system --gid app --home-dir /app app
 
 # OpenTelemetry Java agent: auto-instrumentation (HTTP server, JDBC/Hikari, Redis, JVM metrics...)
-ADD --chmod=644 https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v${OTEL_AGENT_VERSION}/opentelemetry-javaagent.jar /opt/otel/opentelemetry-javaagent.jar
+COPY otel/opentelemetry-javaagent.jar /opt/otel/opentelemetry-javaagent.jar
+RUN chmod 755 /opt/otel && chmod 644 /opt/otel/opentelemetry-javaagent.jar
 
 WORKDIR /app
 COPY --from=build --chown=app:app /build/target/*.jar /app/app.jar

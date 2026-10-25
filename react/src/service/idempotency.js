@@ -1,3 +1,4 @@
+/* global globalThis */
 /**
  * Idempotency keys for payments.
  *
