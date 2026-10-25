@@ -1,0 +1,14 @@
+# Grafana-managed alerting: e-mail contact point. SMTP is configured with GF_SMTP_* env vars on the
+# grafana service (docker-compose.yml) -- Gmail by default, same credentials as the application.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: ecommerce-email
+    receivers:
+      - uid: ecommerce-email
+        type: email
+        is_default: true
+        settings:
+          addresses: ${ALERT_EMAIL_TO}
+          singleEmail: false

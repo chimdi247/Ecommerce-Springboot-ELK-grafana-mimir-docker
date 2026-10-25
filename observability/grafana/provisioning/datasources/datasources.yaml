@@ -1,0 +1,15 @@
+# Grafana datasource: Mimir (metrics). Logs live in Kibana (Elasticsearch); dashboards link to it.
+apiVersion: 1
+
+datasources:
+  - name: Mimir
+    uid: mimir
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      prometheusType: Mimir
+      timeInterval: 15s

@@ -1,0 +1,31 @@
+{
+  "index_patterns": ["ecommerce-logs-*"],
+  "priority": 200,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.lifecycle.name": "ecommerce-logs"
+    },
+    "mappings": {
+      "dynamic": true,
+      "properties": {
+        "@timestamp":     { "type": "date" },
+        "level":          { "type": "keyword" },
+        "service":        { "type": "keyword" },
+        "stack":          { "type": "keyword" },
+        "env":            { "type": "keyword" },
+        "container_name": { "type": "keyword" },
+        "source":         { "type": "keyword" },
+        "trace_id":       { "type": "keyword" },
+        "span_id":        { "type": "keyword" },
+        "event":          { "type": "keyword" },
+        "orderId":        { "type": "keyword" },
+        "paymentIntentId":{ "type": "keyword" },
+        "message":        { "type": "text" },
+        "logger_name":    { "type": "keyword" },
+        "thread_name":    { "type": "keyword" }
+      }
+    }
+  }
+}

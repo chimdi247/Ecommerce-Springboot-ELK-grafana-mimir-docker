@@ -1,0 +1,26 @@
+{
+  "name": "ecommerce-tests",
+  "private": true,
+  "type": "module",
+  "description": "Cypress E2E, unit, integration, Selenium and k6 performance tests for the Ecommerce stack",
+  "scripts": {
+    "test:unit": "vitest run --config vitest.unit.config.mjs",
+    "test:integration": "vitest run --config vitest.integration.config.mjs",
+    "test:e2e": "cypress run --config-file cypress.config.cjs",
+    "test:e2e:open": "cypress open --config-file cypress.config.cjs",
+    "test:selenium": "vitest run --config vitest.selenium.config.mjs",
+    "k6:smoke": "k6 run k6/smoke.js",
+    "k6:load": "k6 run k6/load.js",
+    "k6:stress": "k6 run k6/stress.js",
+    "k6:spike": "k6 run k6/spike.js",
+    "k6:soak": "k6 run k6/soak.js",
+    "k6:breakpoint": "k6 run k6/breakpoint.js",
+    "k6:ratelimit": "k6 run k6/rate-limit.js",
+    "k6:payment-race": "k6 run k6/payment-race.js"
+  },
+  "devDependencies": {
+    "cypress": "^13.15.0",
+    "selenium-webdriver": "^4.25.0",
+    "vitest": "^2.1.0"
+  }
+}

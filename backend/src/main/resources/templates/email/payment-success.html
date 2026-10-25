@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <title th:text="'Payment received - order #' + ${orderId}">Payment received</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f1f5f9;-webkit-text-size-adjust:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+
+<!-- preheader (inbox preview text) -->
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f1f5f9;">
+    <span th:text="'We received ' + ${total} + ' for order #' + ${orderId} + '. Thank you for shopping with ' + ${brandName} + '.'">We received your payment.</span>
+</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f1f5f9;padding:32px 12px;">
+    <tr>
+        <td align="center">
+
+            <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
+                   style="width:100%;max-width:600px;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08);">
+
+                <!-- brand bar -->
+                <tr>
+                    <td align="center" style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);background-color:#4f46e5;padding:28px 24px 22px 24px;">
+                        <div style="font-size:13px;letter-spacing:3px;text-transform:uppercase;color:#c7d2fe;font-weight:600;" th:text="${brandName}">Brand</div>
+                    </td>
+                </tr>
+
+                <!-- hero -->
+                <tr>
+                    <td align="center" style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);background-color:#4f46e5;padding:0 24px 40px 24px;">
+                        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 18px auto;">
+                            <tr>
+                                <td align="center" width="68" height="68"
+                                    style="width:68px;height:68px;border-radius:34px;background-color:#22c55e;color:#ffffff;font-size:36px;line-height:68px;font-weight:700;">&#10003;</td>
+                            </tr>
+                        </table>
+                        <h1 style="margin:0 0 8px 0;font-size:28px;line-height:34px;color:#ffffff;font-weight:700;">Payment successful</h1>
+                        <p style="margin:0;font-size:15px;line-height:22px;color:#e0e7ff;">Order <strong th:text="'#' + ${orderId}">#1</strong> is confirmed and being prepared.</p>
+                    </td>
+                </tr>
+
+                <!-- greeting -->
+                <tr>
+                    <td style="padding:32px 32px 8px 32px;">
+                        <p style="margin:0 0 12px 0;font-size:18px;line-height:26px;color:#0f172a;font-weight:600;">
+                            Hi <span th:text="${customerName}">there</span>,
+                        </p>
+                        <p style="margin:0;font-size:15px;line-height:24px;color:#475569;">
+                            Thank you for your purchase! We received your payment on
+                            <strong style="color:#0f172a;" th:text="${paidAt}">today</strong>.
+                            Here is your receipt.
+                        </p>
+                    </td>
+                </tr>
+
+                <!-- items -->
+                <tr>
+                    <td style="padding:24px 32px 0 32px;">
+                        <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#64748b;font-weight:700;padding-bottom:10px;border-bottom:2px solid #e2e8f0;">Order summary</div>
+
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                            <tr th:each="item : ${items}">
+                                <td style="padding:16px 0;border-bottom:1px solid #f1f5f9;">
+                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                                        <tr>
+                                            <td width="64" valign="top" th:if="${item.imageUrl != null}" style="width:64px;padding-right:14px;">
+                                                <img th:src="${item.imageUrl}" th:alt="${item.name}" width="64" height="64"
+                                                     style="display:block;width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid #e2e8f0;background-color:#f8fafc;">
+                                            </td>
+                                            <td valign="top">
+                                                <div style="font-size:15px;line-height:22px;color:#0f172a;font-weight:600;" th:text="${item.name}">Product</div>
+                                                <div style="font-size:13px;line-height:20px;color:#64748b;">
+                                                    Qty <span th:text="${item.quantity}">1</span> &times; <span th:text="${item.unitPrice}">$0.00</span>
+                                                </div>
+                                            </td>
+                                            <td valign="top" align="right" style="font-size:15px;line-height:22px;color:#0f172a;font-weight:600;white-space:nowrap;" th:text="${item.lineTotal}">$0.00</td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- total -->
+                <tr>
+                    <td style="padding:20px 32px 8px 32px;">
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+                               style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;">
+                            <tr>
+                                <td style="padding:18px 20px;font-size:14px;color:#475569;font-weight:600;">Total paid
+                                    <span style="font-weight:400;color:#94a3b8;" th:text="'(' + ${currency} + ')'">(USD)</span></td>
+                                <td align="right" style="padding:18px 20px;font-size:24px;line-height:28px;color:#4f46e5;font-weight:800;" th:text="${total}">$0.00</td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- reference -->
+                <tr th:if="${paymentReference != null}">
+                    <td style="padding:4px 32px 0 32px;">
+                        <p style="margin:12px 0 0 0;font-size:12px;line-height:18px;color:#94a3b8;">
+                            Payment reference: <span style="font-family:SFMono-Regular,Menlo,Consolas,monospace;color:#64748b;" th:text="${paymentReference}">pi_123</span>
+                        </p>
+                    </td>
+                </tr>
+
+                <!-- CTA -->
+                <tr>
+                    <td align="center" style="padding:28px 32px 8px 32px;">
+                        <a th:href="${orderUrl}" href="#"
+                           style="display:inline-block;background-color:#4f46e5;color:#ffffff;text-decoration:none;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;">
+                            View my orders
+                        </a>
+                    </td>
+                </tr>
+
+                <!-- help -->
+                <tr>
+                    <td style="padding:20px 32px 32px 32px;">
+                        <p style="margin:0;font-size:13px;line-height:21px;color:#64748b;text-align:center;">
+                            Questions about your order? Reply to this email or contact
+                            <a th:href="'mailto:' + ${supportEmail}" href="#" style="color:#4f46e5;text-decoration:none;font-weight:600;" th:text="${supportEmail}">support</a>.
+                        </p>
+                    </td>
+                </tr>
+
+                <!-- footer -->
+                <tr>
+                    <td align="center" style="background-color:#0f172a;padding:22px 24px;">
+                        <p style="margin:0 0 4px 0;font-size:12px;line-height:18px;color:#cbd5e1;">
+                            &copy; <span th:text="${year}">2025</span> <span th:text="${brandName}">Brand</span>. All rights reserved.
+                        </p>
+                        <p style="margin:0;font-size:11px;line-height:17px;color:#64748b;">
+                            You are receiving this email because you made a purchase on <span th:text="${brandName}">Brand</span>.
+                        </p>
+                    </td>
+                </tr>
+            </table>
+
+        </td>
+    </tr>
+</table>
+</body>
+</html>

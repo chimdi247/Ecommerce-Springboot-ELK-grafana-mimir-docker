@@ -1,0 +1,50 @@
+# OpenTelemetry Collector (contrib): receives OTLP from the Spring Boot service (Java agent + manual
+# instrumentation) and forwards METRICS to Mimir via Prometheus remote write.
+#
+#   backend (OTel Java agent) --OTLP/gRPC--> collector --remote write--> Mimir --> Grafana
+#
+# Logs take a different path on purpose (stdout JSON -> Docker fluentd driver -> Fluent Bit ->
+# Elasticsearch -> Kibana); trace_id / span_id in those logs come from the same agent.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+  batch:
+    send_batch_size: 4096
+    timeout: 5s
+
+exporters:
+  prometheusremotewrite/mimir:
+    endpoint: http://mimir:9009/api/v1/push
+    # Keep OTel metric names exactly as emitted (no unit / _total suffixes) so dashboards are stable:
+    # http.server.request.duration -> http_server_request_duration_bucket, ecommerce.payments -> ecommerce_payments
+    add_metric_suffixes: false
+    # service.name -> job ("ecommerce-backend"), service.instance.id -> instance
+    resource_to_telemetry_conversion:
+      enabled: false
+    target_info:
+      enabled: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite/mimir]

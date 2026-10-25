@@ -1,0 +1,77 @@
+# Grafana Mimir (metrics store) -- monolithic mode (-target=all), single replica.
+# Long-term block storage lives in an S3 bucket (MinIO locally; point the
+# endpoint/credentials at AWS S3 to use a real bucket -- see ../README.md).
+# ${VAR} placeholders are expanded because Mimir runs with -config.expand-env=true.
+multitenancy_enabled: false
+
+server:
+  http_listen_port: 9009
+  grpc_listen_port: 9095
+  log_level: warn
+
+common:
+  storage:
+    backend: s3
+    s3:
+      endpoint: ${S3_ENDPOINT}
+      region: ${S3_REGION}
+      access_key_id: ${S3_ACCESS_KEY}
+      secret_access_key: ${S3_SECRET_KEY}
+      insecure: ${S3_INSECURE}
+
+blocks_storage:
+  backend: s3
+  s3:
+    bucket_name: ${MIMIR_BLOCKS_BUCKET}
+  bucket_store:
+    sync_dir: /data/tsdb-sync
+  tsdb:
+    dir: /data/tsdb            # ingester WAL + head blocks (persistent volume)
+
+ruler_storage:
+  backend: s3
+  s3:
+    bucket_name: ${MIMIR_RULER_BUCKET}
+
+alertmanager_storage:
+  backend: s3
+  s3:
+    bucket_name: ${MIMIR_ALERTMANAGER_BUCKET}
+
+compactor:
+  data_dir: /data/compactor
+  sharding_ring:
+    kvstore:
+      store: inmemory
+
+distributor:
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+ingester:
+  ring:
+    instance_addr: 127.0.0.1
+    replication_factor: 1
+    kvstore:
+      store: inmemory
+
+store_gateway:
+  sharding_ring:
+    replication_factor: 1
+    kvstore:
+      store: inmemory
+
+limits:
+  # Local-stack friendly limits.
+  ingestion_rate: 100000
+  ingestion_burst_size: 1000000
+  max_global_series_per_user: 1000000
+  max_label_names_per_series: 100
+  # Multiple writers (collector + prometheus) -> tolerate slight disorder.
+  out_of_order_time_window: 5m
+  compactor_blocks_retention_period: 14d
+
+usage_stats:
+  enabled: false

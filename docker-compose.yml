@@ -1,0 +1,494 @@
+# =============================================================================
+# Ecommerce (React + Spring Boot) -- the WHOLE stack from one file:
+#   docker compose up --build
+#
+#   App          : frontend (nginx+React) :3000  ->  backend (Spring Boot) :2424  ->  MySQL, Redis
+#   Metrics      : OTel Java agent -> OTel Collector -> Mimir (S3/MinIO) -> Grafana :3001
+#   Logs         : JSON stdout -> Docker fluentd driver -> Fluent Bit -> Elasticsearch -> Kibana :5601
+#   Infra metrics: node-exporter, cAdvisor, mysqld-exporter, redis-exporter, blackbox (uptime)
+# Secrets live in .env (copy .env.example). Stripe + Gmail credentials go there.
+# =============================================================================
+
+x-logging: &fluentd-logging
+  # Ships container stdout to Fluent Bit. async: containers start even if Fluent Bit is not up yet.
+  driver: fluentd
+  options:
+    fluentd-address: "localhost:24224"
+    fluentd-async: "true"
+    fluentd-retry-wait: "1s"
+    fluentd-max-retries: "60"
+    tag: "docker.{{.Name}}"
+
+x-s3-env: &s3-env
+  S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
+  S3_INSECURE: ${S3_INSECURE:-true}
+  MIMIR_BLOCKS_BUCKET: ${MIMIR_BLOCKS_BUCKET:-mimir-blocks}
+  MIMIR_RULER_BUCKET: ${MIMIR_RULER_BUCKET:-mimir-ruler}
+  MIMIR_ALERTMANAGER_BUCKET: ${MIMIR_ALERTMANAGER_BUCKET:-mimir-alertmanager}
+
+services:
+
+  # =========================================================================== application
+  mysql:
+    image: mysql:8.0
+    container_name: ecommerce-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-eshop_spring}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    networks: [ecommerce]
+    logging: *fluentd-logging
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce-redis
+    # maxmemory: bounded cache (LRU) and makes "memory usage %" computable. Product cache + rate-limit counters.
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks: [ecommerce]
+    logging: *fluentd-logging
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 256M }
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ecommerce-backend
+    environment:
+      SPRING_PROFILES_ACTIVE: json                      # structured JSON logs
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-eshop_spring}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (32+ characters)}
+      # --- Stripe ---
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_CURRENCY: ${STRIPE_CURRENCY:-usd}
+      # --- Gmail SMTP (payment confirmation e-mails) ---
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_AUTH: ${SMTP_AUTH:-true}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      MAIL_FROM: ${MAIL_FROM:-${SMTP_USERNAME:-}}
+      MAIL_BRAND_NAME: ${MAIL_BRAND_NAME:-Phegon Mart}
+      MAIL_SUPPORT_EMAIL: ${MAIL_SUPPORT_EMAIL:-${SMTP_USERNAME:-}}
+      FRONTEND_URL: ${FRONTEND_URL:-}
+      # --- caching / rate limiting ---
+      PRODUCT_CACHE_TTL_SECONDS: ${PRODUCT_CACHE_TTL_SECONDS:-600}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_GET_ALL_PER_WINDOW: ${RATE_LIMIT_GET_ALL_PER_WINDOW:-30}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      # --- product image upload (optional; seeded demo products use remote images) ---
+      AWS_S3_ACCESS_KEY: ${AWS_S3_ACCESS_KEY:-}
+      AWS_S3_SECRET_KEY: ${AWS_S3_SECRET_KEY:-}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-phegon-eshop}
+      AWS_S3_REGION: ${AWS_S3_REGION:-eu-west-2}
+      APP_SEED_ENABLED: ${APP_SEED_ENABLED:-true}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-local}
+      # --- OpenTelemetry Java agent (auto-instrumentation) ---
+      OTEL_SERVICE_NAME: ecommerce-backend
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_TRACES_EXPORTER: none          # spans still exist: trace_id/span_id are written to every log line
+      OTEL_LOGS_EXPORTER: none            # logs go via Fluent Bit -> Elasticsearch
+      OTEL_METRIC_EXPORT_INTERVAL: "15000"
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=${DEPLOYMENT_ENVIRONMENT:-local}
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      otel-collector: { condition: service_started }
+    ports:
+      - "${BACKEND_PORT:-2424}:2424"
+    networks: [ecommerce]
+    logging: *fluentd-logging
+    deploy:
+      resources:
+        limits: { cpus: "1.00", memory: 1536M }
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./react
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_BASE_URL: /api
+    container_name: ecommerce-frontend
+    depends_on:
+      backend: { condition: service_healthy }
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks: [ecommerce]
+    logging: *fluentd-logging
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+    restart: unless-stopped
+
+  # =========================================================================== metrics: Mimir on S3
+  minio:
+    image: elestio/minio:latest
+    container_name: ecommerce-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    networks: [ecommerce]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot: creates the buckets Mimir stores its data in.
+  minio-init:
+    image: amazon/aws-cli:latest
+    container_name: ecommerce-minio-init
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        EP="--endpoint-url http://minio:9000"
+        for b in ${MIMIR_BLOCKS_BUCKET:-mimir-blocks} ${MIMIR_RULER_BUCKET:-mimir-ruler} ${MIMIR_ALERTMANAGER_BUCKET:-mimir-alertmanager}; do
+          aws $$EP s3api head-bucket --bucket $$b 2>/dev/null || aws $$EP s3 mb s3://$$b
+        done
+        echo "buckets ready"
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_DEFAULT_REGION: ${S3_REGION:-us-east-1}
+    depends_on:
+      minio: { condition: service_healthy }
+    networks: [ecommerce]
+    restart: "no"
+
+  # One-shot: Mimir runs as uid 10001 and must own its data volume.
+  obs-init:
+    image: busybox:1.37
+    container_name: ecommerce-obs-init
+    user: root
+    command: ["sh", "-c", "chown -R 10001:10001 /mimir"]
+    volumes:
+      - mimir-data:/mimir
+    restart: "no"
+
+  mimir:
+    image: grafana/mimir:2.15.0
+    container_name: ecommerce-mimir
+    command: ["-config.file=/etc/mimir/mimir.yaml", "-config.expand-env=true", "-target=all"]
+    environment:
+      <<: *s3-env
+    ports:
+      - "${MIMIR_PORT:-9009}:9009"
+    volumes:
+      - ./observability/mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      - mimir-data:/data
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+      obs-init: { condition: service_completed_successfully }
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    container_name: ecommerce-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_PORT:-4318}:4318"
+    volumes:
+      - ./observability/otel-collector/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - mimir
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  # Prometheus in agent mode: scrapes exporters, remote-writes to Mimir.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: ecommerce-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --enable-feature=agent
+      - --storage.agent.path=/prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - mimir
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: ecommerce-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3001}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ecommerce-overview.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Grafana-managed (unified) alerting + SMTP e-mail (Gmail by default, same credentials as the app)
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+      GF_ALERTING_ENABLED: "false"
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}:${SMTP_PORT:-587}
+      GF_SMTP_USER: ${SMTP_USERNAME:-}
+      GF_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      GF_SMTP_FROM_ADDRESS: ${MAIL_FROM:-${SMTP_USERNAME:-}}
+      GF_SMTP_FROM_NAME: ${GRAFANA_ALERT_FROM_NAME:-Ecommerce Alerts}
+      GF_SMTP_SKIP_VERIFY: ${SMTP_SKIP_VERIFY:-false}
+      GF_SMTP_STARTTLS_POLICY: ${GRAFANA_SMTP_STARTTLS_POLICY:-MandatoryStartTLS}
+      # interpolated inside provisioning/alerting/contact-points.yaml
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-${SMTP_USERNAME:-}}
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - mimir
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  # =========================================================================== logs: Fluent Bit -> Elasticsearch -> Kibana
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: ecommerce-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"          # local dev; enable security for shared environments
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    networks: [ecommerce]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    restart: unless-stopped
+
+  # One-shot: retention policy (7 days) + index template, before logs start flowing.
+  es-setup:
+    image: curlimages/curl:8.10.1
+    container_name: ecommerce-es-setup
+    entrypoint: ["/bin/sh", "/setup/setup.sh"]
+    volumes:
+      - ./observability/elasticsearch:/setup:ro
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    networks: [ecommerce]
+    restart: "no"
+
+  fluent-bit:
+    image: fluent/fluent-bit:3.1.9
+    container_name: ecommerce-fluent-bit
+    ports:
+      # the Docker daemon (on the host) connects here: see x-logging
+      - "24224:24224"
+    volumes:
+      - ./observability/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./observability/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+    depends_on:
+      es-setup: { condition: service_completed_successfully }
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.3
+    container_name: ecommerce-kibana
+    volumes:
+      - ./observability/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  # One-shot: data view + saved searches + "Ecommerce - Logs overview" dashboard.
+  kibana-setup:
+    image: curlimages/curl:8.10.1
+    container_name: ecommerce-kibana-setup
+    entrypoint: ["/bin/sh", "/setup/setup.sh"]
+    volumes:
+      - ./observability/kibana:/setup:ro
+    depends_on:
+      - kibana
+    networks: [ecommerce]
+    restart: "no"
+
+  # =========================================================================== exporters
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: ecommerce-cadvisor
+    privileged: true
+    command:
+      - --housekeeping_interval=15s
+      - --docker_only=true
+      - --store_container_labels=false
+      - --disable_metrics=percpu,sched,tcp,udp,advtcp,referenced_memory,hugetlb,resctrl,cpu_topology
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: ecommerce-node-exporter
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run)($$|/)
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.16.0
+    container_name: ecommerce-mysqld-exporter
+    command:
+      - --mysqld.address=mysql:3306
+      - --mysqld.username=exporter
+    environment:
+      MYSQLD_EXPORTER_PASSWORD: ${MYSQL_EXPORTER_PASSWORD:-exporter_password}
+    depends_on:
+      mysql: { condition: service_healthy }
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    container_name: ecommerce-redis-exporter
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: ecommerce-blackbox-exporter
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./observability/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [ecommerce]
+    restart: unless-stopped
+
+  # =========================================================================== optional / test tooling (profiles)
+  # Local SMTP sink instead of Gmail:  docker compose --profile mailpit up
+  #   (.env: SMTP_HOST=mailpit SMTP_PORT=1025 SMTP_AUTH=false SMTP_STARTTLS=false GRAFANA_SMTP_STARTTLS_POLICY=NoStartTLS)
+  mailpit:
+    profiles: ["mailpit"]
+    image: axllent/mailpit:latest
+    container_name: ecommerce-mailpit
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks: [ecommerce]
+
+  # docker compose --profile tests run --rm k6 run -o experimental-prometheus-rw /scripts/load.js
+  k6:
+    profiles: ["tests"]
+    image: grafana/k6:latest
+    container_name: ecommerce-k6
+    environment:
+      BASE_URL: http://frontend/api
+      K6_PROMETHEUS_RW_SERVER_URL: http://mimir:9009/api/v1/push
+      K6_PROMETHEUS_RW_TREND_STATS: "p(95),p(99),avg,max"
+      K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM: "false"
+    volumes:
+      - ./tests/k6:/scripts:ro
+    networks: [ecommerce]
+
+  # docker compose --profile tests run --rm cypress
+  cypress:
+    profiles: ["tests"]
+    image: cypress/included:13.15.0
+    container_name: ecommerce-cypress
+    working_dir: /e2e
+    entrypoint: ["cypress"]
+    command: ["run", "--config-file", "cypress.config.cjs"]
+    environment:
+      CYPRESS_baseUrl: http://frontend
+      CYPRESS_apiUrl: http://frontend/api
+      CYPRESS_STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+    volumes:
+      - ./tests:/e2e
+    networks: [ecommerce]
+
+  # Remote WebDriver for tests/selenium:  SELENIUM_REMOTE_URL=http://localhost:4444/wd/hub
+  selenium:
+    profiles: ["tests"]
+    image: selenium/standalone-chrome:latest
+    container_name: ecommerce-selenium
+    shm_size: 2gb
+    # Linux host networking so the browser can reach http://localhost:3000
+    network_mode: host
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:
+  mimir-data:
+  prometheus-data:
+  grafana-data:
+  es-data:
+
+networks:
+  ecommerce:
+    driver: bridge

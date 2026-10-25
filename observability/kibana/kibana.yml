@@ -1,0 +1,11 @@
+# Kibana configuration (mounted into the container by docker-compose)
+server.host: "0.0.0.0"
+server.name: "ecommerce-kibana"
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+telemetry.optIn: false
+# Local development: Elasticsearch runs with security disabled. Enable xpack security + users for any shared environment.
+# Fixed keys silence the "encryption key not set" warnings and keep saved objects readable across restarts.
+xpack.encryptedSavedObjects.encryptionKey: "ecommerce-local-encrypted-saved-objects-key-32chars"
+xpack.reporting.encryptionKey: "ecommerce-local-reporting-encryption-key-32chars"
+xpack.security.encryptionKey: "ecommerce-local-security-encryption-key-32chars"
+logging.root.level: warn
